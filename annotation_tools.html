@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>職安災害資料線上批註系統（單機版）</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <style>
+        [v-cloak] { display: none; }
+        .vertical-top { vertical-align: top; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fadeIn { animation: fadeIn 0.25s ease-out forwards; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans min-h-screen flex flex-col">
+
+<div id="app" v-cloak class="flex flex-col min-h-screen">
+    
+    <header class="bg-white border-b border-slate-200 sticky top-0 z-50 shadow-xs">
+        <div class="max-w-7xl mx-auto px-4 py-3 sm:px-6 lg:px-8 space-y-3">
+            
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200 text-sm">
+                <div class="flex flex-wrap items-center gap-2">
+                    <label class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg cursor-pointer transition flex items-center gap-1 shadow-xs">
+                        📥 匯入案件 JSON
+                        <input type="file" accept=".json" @change="handleJsonImport" class="hidden">
+                    </label>
+                    <button type="button" @click="exportAllData" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white font-medium rounded-lg transition flex items-center gap-1 shadow-xs">
+                        📤 匯出批註結果
+                    </button>
+                    <button type="button" @click="clearDatabase" class="px-2 py-1.5 text-red-600 hover:bg-red-50 font-medium rounded-lg transition">
+                        🗑️ 清空本地快取
+                    </button>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-3 w-full md:w-auto justify-end">
+                    <div class="flex items-center gap-1.5 text-xs font-medium" :class="saveStatus.includes('成功') ? 'text-emerald-600' : 'text-amber-600'">
+                        <span class="w-2 h-2 rounded-full" :class="saveStatus.includes('成功') ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'"></span>
+                        {{ saveStatus }}
+                    </div>
+
+                    <div class="flex items-center gap-1.5">
+                        <label class="font-bold text-slate-600 shrink-0">🎯 快速切換:</label>
+                        <select v-model="currentCaseIndex" class="bg-white border border-slate-300 rounded-lg p-1.5 text-xs max-w-[240px] font-medium focus:ring-1 focus:ring-blue-500">
+                            <option v-for="(c, idx) in cases" :key="idx" :value="idx">
+                                ({{ idx + 1 }}) {{ c.標題敘述 }}
+                            </option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pt-1">
+                <div class="min-w-0 flex-1">
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 mb-1">
+                        {{ currentCase?.行業分類 || '未分類' }}
+                    </span>
+                    <h1 class="text-xl font-bold text-slate-900 truncate max-w-2xl" :title="currentCase?.標題敘述">
+                        {{ currentCase?.標題敘述 || '請先匯入 JSON 案件資料' }}
+                    </h1>
+                </div>
+                <div class="flex flex-col sm:flex-row items-start sm:items-center gap-4 bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                    <div class="text-sm font-medium text-slate-600">
+                        案件進度: <span class="text-blue-600 font-bold">{{ totalCases > 0 ? currentCaseIndex + 1 : 0 }}</span> / {{ totalCases }} 筆
+                    </div>
+                    <div class="w-full sm:w-32 bg-slate-200 rounded-full h-2">
+                        <div class="bg-blue-600 h-2 rounded-full transition-all duration-300" :style="{ width: totalCases > 0 ? ((currentPage) / 4) * 100 + '%' : '0%' }"></div>
+                    </div>
+                    <div class="text-sm font-medium text-slate-600">
+                        分頁: <span class="text-blue-600 font-bold">Page {{ currentPage }}</span> / 4
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div v-if="isQualificationMode" class="max-w-7xl mx-auto px-4 pb-2 sm:px-6 lg:px-8">
+            <div class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 text-sm text-blue-900 flex flex-wrap items-center gap-x-4 gap-y-1">
+                <span class="font-bold">📋 演示批注（{{ qualificationTotal }} 題）</span>
+                <span>請逐頁填寫完整；全部完成後可匯出 JSON</span>
+                <span class="font-semibold text-emerald-700">已完成 {{ completedCasesCount }} / {{ qualificationTotal }}</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="flex-grow max-w-7xl w-full mx-auto px-4 py-6 sm:px-6 lg:px-8">
+        
+        <div v-if="totalCases === 0" class="bg-white rounded-xl border border-dashed border-slate-300 p-12 text-center my-12">
+            <span class="text-5xl block mb-4">📂</span>
+            <h3 class="text-lg font-bold text-slate-700">尚未載入職安事故資料</h3>
+            <p class="text-slate-400 text-sm mt-1 mb-4">請點擊上方「匯入案件 JSON」，選取本機的災害案例陣列檔案後開始批注。</p>
+        </div>
+
+        <div v-else>
+            <div v-if="currentPage === 1" class="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-fadeIn">
+                <div class="space-y-4">
+                    <div v-if="currentCase?._test_meta" class="bg-slate-100 p-4 rounded-xl border border-slate-200 text-sm">
+                        <h3 class="font-bold text-slate-800 mb-2">測驗參考欄位（原文，請右側原封不動抄寫）</h3>
+                        <dl class="space-y-1 text-slate-700">
+                            <div class="flex gap-2"><dt class="font-medium shrink-0">災害類型：</dt><dd>{{ getCaseField('災害類型') }}</dd></div>
+                            <div class="flex gap-2"><dt class="font-medium shrink-0">危害類型：</dt><dd>{{ getCaseField('危害類型') }}</dd></div>
+                            <div class="flex gap-2"><dt class="font-medium shrink-0">罹災情況：</dt><dd>{{ getCaseField('罹災情況') }}</dd></div>
+                        </dl>
+                    </div>
+                    <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
+                        <h3 class="text-lg font-bold text-slate-900 border-b border-slate-100 pb-2 mb-3 flex items-center gap-2">
+                            <span class="w-1.5 h-5 bg-blue-600 rounded-full"></span> 發生經過
+                        </h3>
+                        <p class="text-slate-600 text-sm leading-relaxed whitespace-pre-line">{{ currentCase.發生經過 }}</p>
+                    </div>
+                    <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
+                        <h3 class="text-lg font-bold text-slate-900 border-b border-slate-100 pb-2 mb-3 flex items-center gap-2">
+                            <span class="w-1.5 h-5 bg-blue-600 rounded-full"></span> 原因分析
+                        </h3>
+                        <p class="text-slate-600 text-sm leading-relaxed whitespace-pre-line">{{ currentCase.原因分析 }}</p>
+                    </div>
+                    <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
+                        <h3 class="text-lg font-bold text-slate-900 border-b border-slate-100 pb-2 mb-3 flex items-center gap-2">
+                            <span class="w-1.5 h-5 bg-blue-600 rounded-full"></span> 推論與分析過程
+                        </h3>
+                        <ul class="list-disc list-inside text-slate-600 text-sm space-y-1">
+                            <li v-for="(step, idx) in currentCase.推論與分析過程" :key="idx">{{ step }}</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-xs space-y-6">
+                    <div v-if="currentCase?._test_meta" class="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-3 animate-fadeIn">
+                        <p class="font-bold text-amber-900">📝 演示 {{ currentCase._test_meta.id }} — 閱讀確認</p>
+                        <p class="text-sm text-amber-800">{{ currentCase._test_meta.instruction }}</p>
+                        <div>
+                            <label class="block text-sm font-medium text-amber-900 mb-1">{{ currentCase._test_meta.read_prompt }} <span class="text-red-500">*</span></label>
+                            <input type="text" v-model="answers.page0_test.hazard_confirm" class="w-full border border-amber-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-amber-500" :placeholder="currentCase._test_meta.expected_hazard">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-amber-900 mb-1">{{ currentCase._test_meta.casualty_prompt }} <span class="text-red-500">*</span></label>
+                            <input type="text" v-model="answers.page0_test.casualty_confirm" class="w-full border border-amber-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-amber-500" :placeholder="currentCase._test_meta.expected_casualty">
+                        </div>
+                    </div>
+                    <h2 class="text-xl font-bold text-slate-900 border-b pb-3">面向一：事故推論與分析過程的邏輯正確性</h2>
+                    
+                    <div class="space-y-2">
+                        <label class="block font-semibold text-slate-800">（1） 幻覺與誇大風險檢測 <span class="text-red-500">*</span></label>
+                        <div class="space-y-2 mt-2">
+                            <label v-for="n in 5" :key="n" class="flex items-start gap-3 p-2.5 rounded-lg border border-slate-100 hover:bg-slate-50 cursor-pointer text-sm">
+                                <input type="radio" v-model.number="answers.page1_logic.hallucination_score" :value="n" class="mt-0.5 text-blue-600">
+                                <div><span class="font-bold text-slate-700">{{ n }}分</span> - {{ getHallucinationText(n) }}</div>
+                            </label>
+                        </div>
+                        <div v-if="answers.page1_logic.hallucination_score && answers.page1_logic.hallucination_score !== 3" class="mt-3 animate-fadeIn">
+                            <label class="block text-sm font-medium text-amber-800 mb-1">請填寫文字說明原因 <span class="text-red-500">*</span></label>
+                            <textarea v-model="answers.page1_logic.hallucination_reason" class="w-full border border-amber-300 rounded-lg p-2.5 text-sm bg-amber-50/10 focus:ring-2 focus:ring-amber-500" rows="3" placeholder="請說明評分原因..."></textarea>
+                        </div>
+                    </div>
+
+                    <hr class="border-slate-100">
+
+                    <div class="space-y-2">
+                        <label class="block font-semibold text-slate-800">（2） 敘述邏輯與內容一致性 <span class="text-red-500">*</span></label>
+                        <div class="space-y-2 mt-2">
+                            <label v-for="n in 5" :key="n" class="flex items-start gap-3 p-2.5 rounded-lg border border-slate-100 hover:bg-slate-50 cursor-pointer text-sm">
+                                <input type="radio" v-model.number="answers.page1_logic.consistency_score" :value="n" class="mt-0.5 text-blue-600">
+                                <div><span class="font-bold text-slate-700">{{ n }}分</span> - {{ getConsistencyText(n) }}</div>
+                            </label>
+                        </div>
+                        <div v-if="answers.page1_logic.consistency_score && answers.page1_logic.consistency_score < 3" class="mt-3 animate-fadeIn">
+                            <label class="block text-sm font-medium text-amber-800 mb-1">請明確指出不合理之處 <span class="text-red-500">*</span></label>
+                            <textarea v-model="answers.page1_logic.consistency_reason" class="w-full border border-amber-300 rounded-lg p-2.5 text-sm bg-amber-50/10 focus:ring-2 focus:ring-amber-500" rows="3" placeholder="請指出邏輯矛盾或不合理處..."></textarea>
+                        </div>
+                    </div>
+
+                    <hr class="border-slate-100">
+
+                    <div class="space-y-2">
+                        <label class="block font-semibold text-slate-800">（3） 本文結構完整性 <span class="text-red-500">*</span></label>
+                        <div class="flex gap-4 mt-2">
+                            <label class="inline-flex items-center gap-2 cursor-pointer text-sm"><input type="radio" v-model="answers.page1_logic.is_structural_complete" value="是" class="text-blue-600"> 是</label>
+                            <label class="inline-flex items-center gap-2 cursor-pointer text-sm"><input type="radio" v-model="answers.page1_logic.is_structural_complete" value="否" class="text-blue-600"> 否</label>
+                        </div>
+                        <div v-if="answers.page1_logic.is_structural_complete === '否'" class="p-3 bg-slate-50 border border-slate-200 rounded-lg mt-2 space-y-2 animate-fadeIn">
+                            <label class="block text-sm font-medium text-slate-700">請強制勾選缺少哪些項目（可複選）：</label>
+                            <div class="grid grid-cols-2 gap-2 text-sm">
+                                <label v-for="item in ['環境背景', '不安全狀態', '不安全行為／不安全動作', '危害媒介', '後果分析']" :key="item" class="flex items-center gap-2 cursor-pointer">
+                                    <input type="checkbox" :value="item" v-model="answers.page1_logic.missing_structures" class="rounded text-blue-600"> {{ item }}
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <hr class="border-slate-100">
+
+                    <div class="space-y-2">
+                        <label class="block font-semibold text-slate-800">（4） 隱私資訊審查 <span class="text-red-500">*</span></label>
+                        <div class="flex flex-col gap-2 mt-2">
+                            <label class="inline-flex items-center gap-2 cursor-pointer text-sm"><input type="radio" v-model="answers.page1_logic.has_privacy_issue" value="是" class="text-blue-600"> 是（有隱私洩漏疑慮）</label>
+                            <label class="inline-flex items-center gap-2 cursor-pointer text-sm"><input type="radio" v-model="answers.page1_logic.has_privacy_issue" value="否" class="text-blue-600"> 否（無隱私洩漏疑慮）</label>
+                        </div>
+                        <div v-if="answers.page1_logic.has_privacy_issue === '是'" class="mt-3 animate-fadeIn">
+                            <label class="block text-sm font-medium text-amber-800 mb-1">請強制標記相關隱私洩漏項目 <span class="text-red-500">*</span></label>
+                            <textarea v-model="answers.page1_logic.privacy_issue_details" class="w-full border border-amber-300 rounded-lg p-2.5 text-sm bg-amber-50/10 focus:ring-2 focus:ring-amber-500" rows="2" placeholder="請指出涉及隱私的敏感文字..."></textarea>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div v-slot v-if="currentPage === 2" class="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-fadeIn">
+                <div class="space-y-4">
+                    <h3 class="text-lg font-bold text-slate-900 flex items-center gap-2 mb-2">
+                        <span class="w-1.5 h-5 bg-indigo-600 rounded-full"></span> 系統讀入之參考法規清單
+                    </h3>
+                    <div v-for="(law, index) in currentCase.processed_result" :key="index" 
+                         :class="['p-4 rounded-xl border transition-all shadow-xs bg-white', isLawChecked(law) ? 'border-amber-400 ring-2 ring-amber-400/20' : 'border-slate-200']">
+                        <div class="flex items-start gap-3">
+                            <input v-if="answers.page2_laws.evaluation_status === '部分法規不適當'" 
+                                   type="checkbox" :value="law.法規名稱 + law.條號" v-model="tempSelectedLaws" class="mt-1 rounded text-amber-600 w-4 h-4">
+                            <input v-if="answers.page2_laws.evaluation_status === '所有法規均不適當'" 
+                                   type="checkbox" checked disabled class="mt-1 rounded text-red-600 w-4 h-4 opacity-70">
+                            
+                            <div class="flex-1">
+                                <h4 class="font-bold text-slate-900">{{ law.法規名稱 }} · {{ law.條號 }}</h4>
+                                <p class="text-slate-600 text-sm mt-2 bg-slate-50 p-2.5 rounded border border-slate-100 whitespace-pre-line leading-relaxed">
+                                    {{ law.完整法規內文 }}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-xs space-y-6">
+                    <h2 class="text-xl font-bold text-slate-900 border-b pb-3">面向二：法規引用的合理性</h2>
+                    <div class="space-y-3">
+                        <label class="block font-semibold text-slate-800 mb-2">請整體評估模型所選用法規是否符合本案件性質（單選）：<span class="text-red-500">*</span></label>
+                        
+                        <label class="flex items-center gap-3 p-3 rounded-lg border border-slate-100 hover:bg-slate-50 cursor-pointer text-sm">
+                            <input type="radio" v-model="answers.page2_laws.evaluation_status" value="所有引用法規均適當" class="text-blue-600" @change="handleLawStatusChange">
+                            <span>所有引用法規均適當</span>
+                        </label>
+                        <label class="flex flex-col p-3 rounded-lg border border-slate-100 hover:bg-slate-50 cursor-pointer text-sm">
+                            <div class="flex items-center gap-3">
+                                <input type="radio" v-model="answers.page2_laws.evaluation_status" value="部分法規不適當" class="text-blue-600" @change="handleLawStatusChange">
+                                <span class="font-medium text-amber-800">部分法規不適當</span>
+                            </div>
+                        </label>
+                        <label class="flex flex-col p-3 rounded-lg border border-slate-100 hover:bg-slate-50 cursor-pointer text-sm">
+                            <div class="flex items-center gap-3">
+                                <input type="radio" v-model="answers.page2_laws.evaluation_status" value="所有法規均不適當" class="text-blue-600" @change="handleLawStatusChange">
+                                <span class="font-medium text-red-800">所有法規均不適當</span>
+                            </div>
+                        </label>
+                        <label class="flex items-center gap-3 p-3 rounded-lg border border-slate-100 hover:bg-slate-50 cursor-pointer text-sm">
+                            <input type="radio" v-model="answers.page2_laws.evaluation_status" value="未選擇任何法規" class="text-blue-600" @change="handleLawStatusChange">
+                            <span>未選擇任何法規 (直接跳過)</span>
+                        </label>
+                    </div>
+
+                    <div v-if="answers.page2_laws.evaluation_status === '部分法規不適當' && tempSelectedLaws.length > 0" class="mt-4 p-4 bg-amber-50/50 border border-amber-200 rounded-xl space-y-4 animate-fadeIn">
+                        <h4 class="text-sm font-bold text-amber-900">針對已勾選的不適當法規進行修訂：</h4>
+                        <div v-for="lawKey in tempSelectedLaws" :key="lawKey" class="bg-white p-3 rounded-lg border border-slate-200 space-y-2">
+                            <p class="text-xs font-bold text-slate-700 bg-slate-100 px-2 py-1 rounded inline-block">原始法規：{{ lawKey }}</p>
+                            <div>
+                                <label class="block text-xs font-medium text-slate-600 mb-1">建議替換之法規名稱及條號 <span class="text-red-500">*</span></label>
+                                <input type="text" v-model="lawCorrectionMap[lawKey]" class="w-full border border-slate-300 rounded p-2 text-sm focus:ring-1 focus:ring-amber-500">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="answers.page2_laws.evaluation_status === '所有法規均不適當'" class="mt-4 p-4 bg-red-50/30 border border-red-200 rounded-xl space-y-2 animate-fadeIn">
+                        <label class="block text-sm font-bold text-red-900">請填寫建議法規 <span class="text-red-500">*</span></label>
+                        <textarea v-model="allLawsInappropriateReason" class="w-full border border-slate-300 rounded-lg p-2.5 text-sm bg-white focus:ring-2 focus:ring-red-500" rows="4" placeholder="請列出建議採用的正確法規與條文..."></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div v-if="currentPage === 3" class="bg-white p-6 rounded-xl border border-slate-200 shadow-xs space-y-6 animate-fadeIn">
+                <h2 class="text-xl font-bold text-slate-900 border-b pb-3">面向三：危害特徵標籤的準確性</h2>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-slate-200 border border-slate-100 rounded-lg overflow-hidden">
+                        <thead class="bg-slate-50">
+                            <tr>
+                                <th class="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase w-28">維度</th>
+                                <th class="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase w-64">模型生成標籤內容 (系統帶入)</th>
+                                <th class="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase w-48">評估選項</th>
+                                <th class="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase">補充說明（非「適當」時強制必填）</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-slate-200 text-sm">
+                            <tr v-for="dim in tagDimensions" :key="dim.key" class="hover:bg-slate-50/50">
+                                <td class="px-4 py-4 font-medium text-slate-900 vertical-top">{{ dim.name }} <span class="text-red-500">*</span></td>
+                                <td class="px-4 py-4 text-slate-600 whitespace-normal">
+                                    <div class="flex flex-wrap gap-1">
+                                        <span v-for="tag in getModelTags(dim.key)" :key="tag" class="inline-block bg-blue-50 text-blue-700 text-xs px-2 py-1 rounded border border-blue-100">{{ tag }}</span>
+                                    </div>
+                                </td>
+                                <td class="px-4 py-4 vertical-top space-y-1.5">
+                                    <label class="flex items-center gap-2 cursor-pointer"><input type="radio" v-model="answers.page3_tags[dim.key].status" value="適當" class="text-blue-600"><span class="text-emerald-700 font-medium">⭕ 適當</span></label>
+                                    <label v-if="dim.key !== '危害類型'" class="flex items-center gap-2 cursor-pointer"><input type="radio" v-model="answers.page3_tags[dim.key].status" value="部分適當" class="text-blue-600"><span class="text-amber-700 font-medium">🟡 部分適當</span></label>
+                                    <label class="flex items-center gap-2 cursor-pointer"><input type="radio" v-model="answers.page3_tags[dim.key].status" value="不適當" class="text-blue-600"><span class="text-red-700 font-medium">❌ 不適當</span></label>
+                                </td>
+                                <td class="px-4 py-4 vertical-top">
+                                    <div v-if="answers.page3_tags[dim.key].status && answers.page3_tags[dim.key].status !== '適當'">
+                                        <input type="text" v-model="answers.page3_tags[dim.key].correction" class="w-full border border-amber-300 rounded p-2 text-sm bg-amber-50/10 focus:ring-1 focus:ring-amber-500" :placeholder="dim.tip">
+                                    </div>
+                                    <span v-else class="text-slate-400 text-xs italic">正確時免填</span>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div v-if="currentPage === 4" class="bg-white p-6 rounded-xl border border-slate-200 shadow-xs space-y-6 animate-fadeIn">
+                <h2 class="text-xl font-bold text-slate-900 border-b pb-3">面向四：改善建議適用度</h2>
+                
+                <div class="space-y-2 p-4 bg-slate-50 rounded-xl border border-slate-100">
+                    <label class="block font-semibold text-slate-800">（1） 關鍵改善動作評估 <span class="text-red-500">*</span></label>
+                    <div class="bg-white p-3 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 my-2">
+                        <ul class="list-disc list-inside space-y-1">
+                            <li v-for="act in currentCase.關鍵改善動作" :key="act">{{ act }}</li>
+                        </ul>
+                    </div>
+                    <div class="space-y-2 mt-2">
+                        <label v-for="n in 5" :key="n" class="flex items-start gap-3 p-2 bg-white rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer text-sm">
+                            <input type="radio" v-model.number="answers.page4_improvements.action_score" :value="n" class="mt-0.5 text-blue-600">
+                            <div><span class="font-bold text-slate-700">{{ n }}分</span> - {{ getImprovementScoreText(n) }}</div>
+                        </label>
+                    </div>
+                    <div v-if="answers.page4_improvements.action_score && answers.page4_improvements.action_score < 3" class="mt-3 animate-fadeIn">
+                        <label class="block text-sm font-medium text-amber-800 mb-1">說明不足之處及建議修改方向 <span class="text-red-500">*</span></label>
+                        <textarea v-model="answers.page4_improvements.action_reason" class="w-full border border-amber-300 rounded-lg p-2.5 text-sm bg-white focus:ring-2 focus:ring-amber-500" rows="3" placeholder="請填寫補強方向..."></textarea>
+                    </div>
+                </div>
+
+                <hr class="border-slate-100">
+
+                <div class="space-y-2 p-4 bg-slate-50 rounded-xl border border-slate-100">
+                    <label class="block font-semibold text-slate-800">（2） 改善建議摘要評估 <span class="text-red-500">*</span></label>
+                    <div class="bg-white p-3 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 my-2">
+                        <ul class="list-disc list-inside space-y-1">
+                            <li v-for="sum in currentCase.改善建議摘要" :key="sum">{{ sum }}</li>
+                        </ul>
+                    </div>
+                    <div class="space-y-2 mt-2">
+                        <label v-for="n in 5" :key="n" class="flex items-start gap-3 p-2 bg-white rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer text-sm">
+                            <input type="radio" v-model.number="answers.page4_improvements.summary_score" :value="n" class="mt-0.5 text-blue-600">
+                            <div><span class="font-bold text-slate-700">{{ n }}分</span> - {{ getImprovementScoreText(n) }}</div>
+                        </label>
+                    </div>
+                    <div v-if="answers.page4_improvements.summary_score && answers.page4_improvements.summary_score < 3" class="mt-3 animate-fadeIn">
+                        <label class="block text-sm font-medium text-amber-800 mb-1">說明不足之處及建議修改方向 <span class="text-red-500">*</span></label>
+                        <textarea v-model="answers.page4_improvements.summary_reason" class="w-full border border-amber-300 rounded-lg p-2.5 text-sm bg-white focus:ring-2 focus:ring-amber-500" rows="3" placeholder="請填寫補強方向..."></textarea>
+                    </div>
+                </div>
+
+                <hr class="border-slate-100">
+
+                <div class="space-y-3">
+                    <label class="block font-semibold text-slate-800">（3） 個人防護具（PPE）應用審查 <span class="text-red-500">*</span></label>
+                    <div class="border border-slate-200 rounded-lg overflow-hidden max-w-2xl bg-white">
+                        <div v-for="(ppe, idx) in answers.page4_improvements.ppe_evaluation" :key="idx" class="flex items-center justify-between p-3 border-b border-slate-100 hover:bg-slate-50">
+                            <span class="font-medium text-slate-700">{{ ppe.item }}</span>
+                            <div class="flex gap-4 text-sm">
+                                <label class="inline-flex items-center gap-1.5 cursor-pointer"><input type="radio" v-model="ppe.result" value="正確" class="text-blue-600"> 正確</label>
+                                <label class="inline-flex items-center gap-1.5 cursor-pointer"><input type="radio" v-model="ppe.result" value="不需要" class="text-blue-600"> 不需要</label>
+                                <label class="inline-flex items-center gap-1.5 cursor-pointer"><input type="radio" v-model="ppe.result" value="缺失" class="text-blue-600"> 缺失</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="flex flex-wrap gap-2 max-w-2xl mt-2" v-if="answers.page4_improvements.missing_ppe_added?.length > 0">
+                        <span v-for="(addPpe, aIdx) in answers.page4_improvements.missing_ppe_added" :key="aIdx" class="inline-flex items-center gap-1.5 bg-indigo-50 text-indigo-700 text-xs font-medium px-2.5 py-1 rounded border border-indigo-200">
+                            {{ addPpe }} <button type="button" @click="removeAddedPpe(aIdx)" class="text-indigo-400 hover:text-indigo-600 font-bold">×</button>
+                        </span>
+                    </div>
+
+                    <div class="flex items-center gap-2 max-w-sm mt-1">
+                        <input type="text" v-model="tempNewPpe" @keyup.enter="addNewPpe" class="w-full border border-slate-300 rounded p-1.5 text-sm" placeholder="輸入漏填的 PPE 品項...">
+                        <button type="button" @click="addNewPpe" class="whitespace-nowrap px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-sm font-medium">➕ 新增</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="bg-white border-t border-slate-200 p-4 sticky bottom-0 z-50 shadow-md">
+        <div class="max-w-7xl mx-auto px-4 flex justify-between items-center sm:px-6 lg:px-8">
+            <button type="button" @click="prevPage" :disabled="currentPage === 1 || totalCases === 0" class="px-5 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 font-medium text-sm disabled:opacity-40 disabled:cursor-not-allowed transition">← 上一頁</button>
+            <button type="button" @click="nextPage" :disabled="totalCases === 0" class="px-5 py-2 rounded-lg font-medium text-sm transition text-white shadow-xs" :class="currentPage === 4 ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-blue-600 hover:bg-blue-500'">
+                {{ currentPage === 4 ? (currentCaseIndex === totalCases - 1 ? '完成所有案件匯出 💾' : '提交本筆並進入下一案 💾') : '下一頁 →' }}
+            </button>
+        </div>
+    </footer>
+
+</div>
+
+<script>
+const { createApp, ref, computed, watch } = Vue;
+
+// 案例 JSON 欄位歧異詞：UI 維度 -> 資料檔可能使用的鍵名（依序嘗試，先匹配實際輸出欄位）
+const CASE_FIELD_ALIASES = {
+    "防護設施缺失": ["防護缺失", "防護設施缺失"],
+    "不安全行為": ["不安全動作", "不安全行為"],
+    "危害類型": ["危害類型", "災害類型"],
+    "災害類型": ["災害類型", "危害類型"],
+    "罹災情況": ["罹災情況"],
+};
+
+const resolveCaseField = (caseObj, key) => {
+    if (!caseObj) return null;
+    const keys = CASE_FIELD_ALIASES[key] || [key];
+    for (const k of keys) {
+        const v = caseObj[k];
+        if (v === undefined || v === null) continue;
+        if (Array.isArray(v) && v.length === 0) continue;
+        if (typeof v === "string" && !v.trim()) continue;
+        return v;
+    }
+    return null;
+};
+
+const formatCaseField = (caseObj, key) => {
+    const value = resolveCaseField(caseObj, key);
+    if (Array.isArray(value)) return value.join("、");
+    return value || "—";
+};
+
+// IndexedDB 生態系封裝
+const DB_NAME = "ZhianAnnotationLargeDB";
+const DB_VERSION = 1;
+let dbInstance = null;
+
+const initIndexedDB = () => {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            // 儲存原始大龐大案件資料 (>5MB/筆)
+            if (!db.objectStoreNames.contains("cases_store")) {
+                db.createObjectStore("cases_store", { keyPath: "id" });
+            }
+            // 儲存使用者專家批註結果 (輕量級，提升效能)
+            if (!db.objectStoreNames.contains("answers_store")) {
+                db.createObjectStore("answers_store", { keyPath: "case_title" });
+            }
+        };
+        request.onsuccess = (e) => {
+            dbInstance = e.target.result;
+            resolve(dbInstance);
+        };
+        request.onerror = (e) => reject(e);
+    });
+};
+
+createApp({
+    setup() {
+        const cases = ref([]);
+        const currentCaseIndex = ref(0);
+        const currentPage = ref(1);
+        const allCaseAnswers = ref({});
+        const saveStatus = ref("本地資料庫已就緒");
+        const tempNewPpe = ref('');
+
+        const totalCases = computed(() => cases.value.length);
+        const currentCase = computed(() => cases.value[currentCaseIndex.value] || null);
+        const answers = computed(() => allCaseAnswers.value[currentCaseIndex.value] || null);
+        const isQualificationMode = computed(() => cases.value.some(c => c._test_meta));
+        const qualificationTotal = computed(() => cases.value.filter(c => c._test_meta).length || totalCases.value);
+
+        const tagDimensions = [
+            { key: '危害類型', name: '危害類型', tip: '請標記錯誤類型並輸入正確標籤' },
+            { key: '危害媒介', name: '危害媒介', tip: '請標記錯誤的媒介物並建議正確媒介' },
+            { key: '作業型態', name: '作業型態', tip: '請標記錯誤標籤，建議正確作業型態' },
+            { key: '空間特徵', name: '空間特徵', tip: '請標記錯誤標籤，建議正確空間描述' },
+            { key: '防護設施缺失', name: '防護設施缺失（防護缺失）', tip: '請標記遺漏或錯誤之防護缺失項目' },
+            { key: '不安全狀態', name: '不安全狀態', tip: '請標記錯誤標籤，建議正確狀態描述' },
+            { key: '不安全行為', name: '不安全行為／不安全動作', tip: '請標記錯誤標籤，建議正確行為描述' }
+        ];
+
+        // Page 2 狀態
+        const tempSelectedLaws = ref([]);
+        const lawCorrectionMap = ref({});
+        const allLawsInappropriateReason = ref('');
+
+        // 初始化單筆答案結構
+        const initAnswersStructure = (idx, targetCase) => {
+            if (allCaseAnswers.value[idx]) return;
+
+            const ppeList = (targetCase.個人防護具的應用 || []).map(item => ({ item, result: '' }));
+            const page3Init = {};
+            tagDimensions.forEach(d => { page3Init[d.key] = { status: '', correction: '' }; });
+
+            allCaseAnswers.value[idx] = {
+                case_title: targetCase.標題敘述,
+                page0_test: { hazard_confirm: "", casualty_confirm: "" },
+                page1_logic: {
+                    hallucination_score: null, hallucination_reason: "",
+                    consistency_score: null, consistency_reason: "",
+                    is_structural_complete: null, missing_structures: [],
+                    has_privacy_issue: null, privacy_issue_details: ""
+                },
+                page2_laws: { evaluation_status: "", inappropriate_laws: [] },
+                page3_tags: page3Init,
+                page4_improvements: {
+                    action_score: null, action_reason: "",
+                    summary_score: null, summary_reason: "",
+                    ppe_evaluation: ppeList, missing_ppe_added: []
+                }
+            };
+        };
+
+        const getCaseField = (key) => formatCaseField(currentCase.value, key);
+
+        const validateCaseCompleteness = (idx, pageLimit = 4) => {
+            const targetCase = cases.value[idx];
+            const ans = allCaseAnswers.value[idx];
+            if (!targetCase || !ans) return "尚無批註資料";
+
+            if (pageLimit >= 1) {
+                if (targetCase._test_meta) {
+                    if (!ans.page0_test?.hazard_confirm?.trim()) return "請抄寫「危害類型」";
+                    if (!ans.page0_test?.casualty_confirm?.trim()) return "請抄寫「罹災情況」";
+                }
+                const p1 = ans.page1_logic;
+                if (!p1.hallucination_score) return "請評估「幻覺與誇大風險檢測」";
+                if (p1.hallucination_score !== 3 && !p1.hallucination_reason.trim()) return "請填寫「幻覺文字說明原因」";
+                if (!p1.consistency_score) return "請評估「敘述邏輯與內容一致性」";
+                if (p1.consistency_score < 3 && !p1.consistency_reason.trim()) return "請填寫「指出不合理之處」";
+                if (!p1.is_structural_complete) return "請評估「本文結構完整性」";
+                if (p1.is_structural_complete === '否' && p1.missing_structures.length === 0) return "請勾選缺少哪些結構";
+                if (!p1.has_privacy_issue) return "請填寫「隱私資訊審查」";
+                if (p1.has_privacy_issue === '是' && !p1.privacy_issue_details.trim()) return "請強制填寫洩漏隱私細項";
+            }
+
+            if (pageLimit >= 2) {
+                const p2 = ans.page2_laws;
+                if (!p2.evaluation_status) return "請評估法規引用的合理性選項";
+                if (p2.evaluation_status === '部分法規不適當') {
+                    if (!p2.inappropriate_laws?.length) return "請至左側勾選不適當的法規卡片";
+                    for (const law of p2.inappropriate_laws) {
+                        if (!law.suggested_replacement?.trim()) return `請為 [${law.original_law}] 填寫建議法規`;
+                    }
+                }
+                if (p2.evaluation_status === '所有法規均不適當' && !p2.inappropriate_laws?.[0]?.suggested_replacement?.trim()) {
+                    return "請填寫建議法規說明";
+                }
+            }
+
+            if (pageLimit >= 3) {
+                for (const dim of tagDimensions) {
+                    const tagAns = ans.page3_tags?.[dim.key];
+                    if (!tagAns?.status) return `請完成 [${dim.name}] 的適當性評估`;
+                    if (tagAns.status !== '適當' && !tagAns.correction.trim()) return `請填寫 [${dim.name}] 的修正說明`;
+                }
+            }
+
+            if (pageLimit >= 4) {
+                const p4 = ans.page4_improvements;
+                if (!p4.action_score) return "請評估「關鍵改善動作」";
+                if (p4.action_score < 3 && !p4.action_reason.trim()) return "請填寫關鍵改善動作不足處";
+                if (!p4.summary_score) return "請評估「改善建議摘要」";
+                if (p4.summary_score < 3 && !p4.summary_reason.trim()) return "請填寫改善建議摘要不足處";
+                for (const ppe of p4.ppe_evaluation || []) {
+                    if (!ppe.result) return `請完成 [${ppe.item}] 的防護具審查`;
+                }
+            }
+
+            return null;
+        };
+
+        const completedCasesCount = computed(() =>
+            cases.value.filter((_, idx) => !validateCaseCompleteness(idx)).length
+        );
+
+        const syncCurrentPage2Answers = () => {
+            if (!answers.value) return;
+            const p2 = answers.value.page2_laws;
+            if (p2.evaluation_status === '部分法規不適當') {
+                p2.inappropriate_laws = tempSelectedLaws.value.map(key => ({
+                    original_law: key, suggested_replacement: lawCorrectionMap.value[key] || ""
+                }));
+            } else if (p2.evaluation_status === '所有法規均不適當') {
+                p2.inappropriate_laws = currentCase.value.processed_result.map(l => ({
+                    original_law: l.法規名稱 + l.條號, suggested_replacement: allLawsInappropriateReason.value
+                }));
+            } else {
+                p2.inappropriate_laws = [];
+            }
+        };
+
+        // 從本地資料庫恢復歷史資料
+        const restoreFromDB = async () => {
+            if (!dbInstance) return;
+            saveStatus.value = "正在嘗試恢復歷史進度...";
+            
+            // 讀取案件
+            const txCases = dbInstance.transaction("cases_store", "readonly");
+            const storeCases = txCases.objectStore("cases_store");
+            
+            storeCases.getAll().onsuccess = (e) => {
+                const res = e.target.result;
+                if (res && res.length > 0) {
+                    // 按序排序還原
+                    res.sort((a,b) => a.id - b.id);
+                    cases.value = res.map(item => item.data);
+
+                    // 讀取對應批註
+                    const txAns = dbInstance.transaction("answers_store", "readonly");
+                    txAns.objectStore("answers_store").getAll().onsuccess = (ev) => {
+                        const ansRes = ev.target.result;
+                        cases.value.forEach((c, idx) => {
+                            initAnswersStructure(idx, c);
+                            const savedAns = ansRes.find(a => a.case_title === c.標題敘述);
+                            if (savedAns) {
+                                allCaseAnswers.value[idx] = savedAns;
+                            }
+                        });
+                        saveStatus.value = "歷史資料恢復成功，歡迎回來";
+                    };
+                } else {
+                    saveStatus.value = "資料庫無舊檔，請匯入 JSON 啟動";
+                }
+            };
+        };
+
+        // 核心【自動存檔】核心防抖（Debounce）機制
+        let debounceTimer = null;
+        const triggerAutoSave = () => {
+            if (totalCases.value === 0) return;
+            saveStatus.value = "使用者編輯中，等待空閒...";
+            
+            if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                saveCurrentProgressToDB();
+            }, 30000); // 停止輸入後 30秒進行背景存檔
+        };
+
+        const saveCurrentProgressToDB = () => {
+            if (!dbInstance || totalCases.value === 0 || !answers.value) return;
+            syncCurrentPage2Answers();
+                const tx = dbInstance.transaction("answers_store", "readwrite");
+                const store = tx.objectStore("answers_store");
+                
+                // 僅深度克隆當前這一筆答案進行大效能極優化存檔，絕不拖累 UI 執行緒
+                const plainData = JSON.parse(JSON.stringify(answers.value));
+                store.put(plainData);
+                
+                tx.oncomplete = () => {
+                    const now = new Date();
+                    saveStatus.value = `自動存檔成功 (${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')})`;
+                };
+            } catch (err) {
+                console.error("存檔失敗: ", err);
+                saveStatus.value = "⚠️ 自動存檔失敗！本地空間可能有異常。";
+            }
+        };
+
+        // 當切換【快速切換】或案件時同步其對應的 Page 2 暫存區
+        watch(currentCaseIndex, (newIdx, oldIdx) => {
+            if (totalCases.value === 0) return;
+
+            if (oldIdx !== undefined && allCaseAnswers.value[oldIdx]?.page2_laws) {
+                const oldP2 = allCaseAnswers.value[oldIdx].page2_laws;
+                const oldCase = cases.value[oldIdx];
+                if (oldP2.evaluation_status === '部分法規不適當') {
+                    oldP2.inappropriate_laws = tempSelectedLaws.value.map(key => ({
+                        original_law: key, suggested_replacement: lawCorrectionMap.value[key] || ""
+                    }));
+                } else if (oldP2.evaluation_status === '所有法規均不適當' && oldCase) {
+                    oldP2.inappropriate_laws = oldCase.processed_result.map(l => ({
+                        original_law: l.法規名稱 + l.條號, suggested_replacement: allLawsInappropriateReason.value
+                    }));
+                }
+            }
+
+            currentPage.value = 1;
+            
+            // 還原 Page 2 中介值
+            const p2 = allCaseAnswers.value[newIdx]?.page2_laws;
+            if (p2) {
+                if (p2.evaluation_status === '部分法規不適當') {
+                    tempSelectedLaws.value = p2.inappropriate_laws.map(l => l.original_law);
+                    lawCorrectionMap.value = {};
+                    p2.inappropriate_laws.forEach(l => { lawCorrectionMap.value[l.original_law] = l.suggested_replacement; });
+                    allLawsInappropriateReason.value = '';
+                } else if (p2.evaluation_status === '所有法規均不適當') {
+                    tempSelectedLaws.value = [];
+                    lawCorrectionMap.value = {};
+                    allLawsInappropriateReason.value = p2.inappropriate_laws[0]?.suggested_replacement || '';
+                } else {
+                    tempSelectedLaws.value = [];
+                    lawCorrectionMap.value = {};
+                    allLawsInappropriateReason.value = '';
+                }
+            }
+        });
+
+        // 深度聆聽所有答案對象，只要任何文字、單選更改即觸發自動存檔
+        watch(allCaseAnswers, () => {
+            triggerAutoSave();
+        }, { deep: true });
+
+        // 處理外部 JSON 檔案讀入
+        const ingestCases = async (inputArray, sourceLabel = 'JSON') => {
+            if (inputArray.length === 0 || !inputArray[0].標題敘述) {
+                alert("匯入失敗：JSON 結構似乎不合規，需包含「標題敘述」等欄位！");
+                return false;
+            }
+
+            cases.value = inputArray;
+            currentCaseIndex.value = 0;
+            currentPage.value = 1;
+            allCaseAnswers.value = {};
+
+            const tx = dbInstance.transaction(["cases_store", "answers_store"], "readwrite");
+            const storeCases = tx.objectStore("cases_store");
+            storeCases.clear();
+
+            inputArray.forEach((c, idx) => {
+                storeCases.put({ id: idx, data: JSON.parse(JSON.stringify(c)) });
+                initAnswersStructure(idx, c);
+            });
+
+            return new Promise((resolve) => {
+                tx.oncomplete = () => {
+                    saveStatus.value = `成功載入 ${inputArray.length} 筆災害資料（${sourceLabel}）`;
+                    resolve(true);
+                };
+                tx.onerror = () => resolve(false);
+            });
+        };
+
+        const handleJsonImport = (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            saveStatus.value = "大檔案讀取中，請稍候...";
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                try {
+                    const parsed = JSON.parse(e.target.result);
+                    const inputArray = Array.isArray(parsed) ? parsed : [parsed];
+                    const ok = await ingestCases(inputArray, file.name);
+                    if (ok) {
+                        alert(`成功載入 ${inputArray.length} 筆災害資料！\n請逐頁填寫完整，全部完成後可匯出 JSON。`);
+                    }
+                } catch (err) {
+                    alert("解析 JSON 錯誤，請確認編碼與語法正確性。");
+                    saveStatus.value = "解析失敗";
+                }
+            };
+            reader.readAsText(file);
+        };
+
+        // 匯出全部專家批註 JSON 檔案
+        const exportAllData = () => {
+            if (totalCases.value === 0) {
+                alert("目前沒有任何案件資料可供匯出。");
+                return false;
+            }
+            syncCurrentPage2Answers();
+            saveCurrentProgressToDB();
+
+            const pending = [];
+            cases.value.forEach((c, idx) => {
+                const err = validateCaseCompleteness(idx);
+                if (err) {
+                    const label = c._test_meta?.id || c.標題敘述 || `第 ${idx + 1} 案`;
+                    pending.push(`${label}：${err}`);
+                }
+            });
+            if (pending.length > 0) {
+                alert(`⚠️ 尚有批注未完成，無法匯出。\n\n${pending.slice(0, 8).join("\n")}${pending.length > 8 ? `\n…等共 ${pending.length} 案` : ""}`);
+                return false;
+            }
+
+            const outputData = Object.keys(allCaseAnswers.value).map(key => {
+                const item = allCaseAnswers.value[key];
+                const sourceCase = cases.value[Number(key)];
+                const caseMeta = sourceCase?._test_meta;
+                return {
+                    ...item,
+                    ...(caseMeta ? { _qualification_id: caseMeta.id } : {}),
+                    ...(sourceCase?._case_index != null ? { _case_index: sourceCase._case_index } : {}),
+                    _export_complete: true,
+                    _exported_at: new Date().toISOString()
+                };
+            });
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(outputData, null, 2));
+            const dlAnchor = document.createElement('a');
+            dlAnchor.setAttribute("href", dataStr);
+            dlAnchor.setAttribute("download", `職安系統批註結果_${isQualificationMode.value ? '演示_' : ''}${new Date().toISOString().slice(0,10)}.json`);
+            document.body.appendChild(dlAnchor);
+            dlAnchor.click();
+            dlAnchor.remove();
+            return true;
+        };
+
+        const clearDatabase = () => {
+            if (confirm("確定要清空本地 IndexedDB 所有快取快照嗎？(原檔案不會被刪除)")) {
+                const tx1 = dbInstance.transaction("cases_store", "readwrite");
+                tx1.objectStore("cases_store").clear();
+                const tx2 = dbInstance.transaction("answers_store", "readwrite");
+                tx2.objectStore("answers_store").clear();
+                
+                cases.value = [];
+                allCaseAnswers.value = {};
+                currentCaseIndex.value = 0;
+                currentPage.value = 1;
+                saveStatus.value = "本地資料庫已清空";
+            }
+        };
+
+        // 表單內層控制方法
+        const handleLawStatusChange = () => {
+            if (answers.value.page2_laws.evaluation_status === '所有法規均不適當') {
+                tempSelectedLaws.value = currentCase.value.processed_result.map(l => l.法規名稱 + l.條號);
+            } else {
+                tempSelectedLaws.value = [];
+                lawCorrectionMap.value = {};
+                allLawsInappropriateReason.value = '';
+            }
+        };
+
+        const isLawChecked = (law) => {
+            const key = law.法規名稱 + law.條號;
+            if (answers.value.page2_laws.evaluation_status === '所有法規均不適當') return true;
+            return tempSelectedLaws.value.includes(key);
+        };
+
+        const getModelTags = (key) => {
+            const value = resolveCaseField(currentCase.value, key);
+            if (Array.isArray(value)) return value;
+            return value ? [value] : [];
+        };
+
+        const addNewPpe = () => {
+            if (tempNewPpe.value.trim()) {
+                answers.value.page4_improvements.missing_ppe_added.push(tempNewPpe.value.trim());
+                tempNewPpe.value = '';
+            }
+        };
+        const removeAddedPpe = (idx) => {
+            answers.value.page4_improvements.missing_ppe_added.splice(idx, 1);
+        };
+
+        // 表單完整性檢驗（僅檢查必填欄位，不檢查標準答案）
+        const validateCurrentPage = () => {
+            syncCurrentPage2Answers();
+            return validateCaseCompleteness(currentCaseIndex.value, currentPage.value);
+        };
+
+        const prevPage = () => { if (currentPage.value > 1) currentPage.value--; };
+        const nextPage = () => {
+            const errorMsg = validateCurrentPage();
+            if (errorMsg) {
+                alert(`⚠️ 請先補齊本頁必填欄位\n\n${errorMsg}`);
+                return;
+            }
+
+            if (currentPage.value < 4) {
+                currentPage.value++;
+            } else {
+                saveCurrentProgressToDB();
+                if (currentCaseIndex.value < totalCases.value - 1) {
+                    alert("✅ 本案批註已存檔，準備進入下一案。");
+                    currentCaseIndex.value++;
+                    currentPage.value = 1;
+                } else {
+                    if (exportAllData()) {
+                        alert("🎉 全部案件批註已完成，結果已匯出 JSON。");
+                    }
+                }
+            }
+        };
+
+        const getHallucinationText = (s) => ["", "劣於人類：存在明顯幻覺、虛構或嚴重誇大", "部分劣於人類：部分內容有幻覺但整體尚可辨識", "與人類相仿：推論合理，無明顯幻覺", "較人類好：推論更完整，補充了缺漏細節", "優於人類：推論嚴謹，顯著優於原始報告深度"][s];
+        const getConsistencyText = (s) => ["", "前後存在明顯矛盾，內容不可信", "部分存在矛盾，但整體尚屬合理", "整體合理，存在細微瑕疵", "整體合理且無明顯瑕疵", "結構嚴謹，無任何邏輯瑕疵"][s];
+        const getImprovementScoreText = (s) => ["", "毫無關係", "有關但過於空泛無具體建議", "有關且提到關鍵點但仍需細節", "有關且提到大多數細節，輕微缺失", "非常完美，所有細節皆提及"][s];
+
+        // 啟動掛載初始化
+        initIndexedDB().then(() => {
+            restoreFromDB();
+        });
+
+        return {
+            cases, currentCaseIndex, currentPage, totalCases, currentCase, answers, tagDimensions,
+            tempSelectedLaws, lawCorrectionMap, allLawsInappropriateReason, tempNewPpe, saveStatus,
+            isQualificationMode, qualificationTotal, completedCasesCount, getCaseField,
+            handleJsonImport, exportAllData, clearDatabase, handleLawStatusChange, isLawChecked, getModelTags,
+            addNewPpe, removeAddedPpe, prevPage, nextPage, getHallucinationText, getConsistencyText, getImprovementScoreText
+        };
+    }
+}).mount('#app');
+</script>
