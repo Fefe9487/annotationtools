@@ -204,7 +204,7 @@
                 </div>
             </div>
 
-            <div v-slot v-if="currentPage === 2" class="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-fadeIn">
+            <div v-if="currentPage === 2" class="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-fadeIn">
                 <div class="space-y-4">
                     <h3 class="text-lg font-bold text-slate-900 flex items-center gap-2 mb-2">
                         <span class="w-1.5 h-5 bg-indigo-600 rounded-full"></span> 系統讀入之參考法規清單
@@ -572,7 +572,7 @@ createApp({
         );
 
         const syncCurrentPage2Answers = () => {
-            if (!answers.value) return;
+            if (!answers.value || !currentCase.value) return;
             const p2 = answers.value.page2_laws;
             if (p2.evaluation_status === '部分法規不適當') {
                 p2.inappropriate_laws = tempSelectedLaws.value.map(key => ({
@@ -637,13 +637,15 @@ createApp({
         const saveCurrentProgressToDB = () => {
             if (!dbInstance || totalCases.value === 0 || !answers.value) return;
             syncCurrentPage2Answers();
+
+            try {
                 const tx = dbInstance.transaction("answers_store", "readwrite");
                 const store = tx.objectStore("answers_store");
-                
+
                 // 僅深度克隆當前這一筆答案進行大效能極優化存檔，絕不拖累 UI 執行緒
                 const plainData = JSON.parse(JSON.stringify(answers.value));
                 store.put(plainData);
-                
+
                 tx.oncomplete = () => {
                     const now = new Date();
                     saveStatus.value = `自動存檔成功 (${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')})`;
@@ -703,6 +705,10 @@ createApp({
         const ingestCases = async (inputArray, sourceLabel = 'JSON') => {
             if (inputArray.length === 0 || !inputArray[0].標題敘述) {
                 alert("匯入失敗：JSON 結構似乎不合規，需包含「標題敘述」等欄位！");
+                return false;
+            }
+            if (!dbInstance) {
+                alert("本地資料庫尚未就緒，請稍候 1～2 秒後再匯入。");
                 return false;
             }
 
@@ -812,6 +818,7 @@ createApp({
 
         // 表單內層控制方法
         const handleLawStatusChange = () => {
+            if (!answers.value || !currentCase.value) return;
             if (answers.value.page2_laws.evaluation_status === '所有法規均不適當') {
                 tempSelectedLaws.value = currentCase.value.processed_result.map(l => l.法規名稱 + l.條號);
             } else {
@@ -822,6 +829,7 @@ createApp({
         };
 
         const isLawChecked = (law) => {
+            if (!answers.value) return false;
             const key = law.法規名稱 + law.條號;
             if (answers.value.page2_laws.evaluation_status === '所有法規均不適當') return true;
             return tempSelectedLaws.value.includes(key);
