@@ -168,9 +168,13 @@
                                 <div><span class="font-bold text-slate-700">{{ n }}分</span> - {{ getConsistencyText(n) }}</div>
                             </label>
                         </div>
-                        <div v-if="answers.page1_logic.consistency_score && answers.page1_logic.consistency_score < 3" class="mt-3 animate-fadeIn">
-                            <label class="block text-sm font-medium text-amber-800 mb-1">請明確指出不合理之處 <span class="text-red-500">*</span></label>
-                            <textarea v-model="answers.page1_logic.consistency_reason" class="w-full border border-amber-300 rounded-lg p-2.5 text-sm bg-amber-50/10 focus:ring-2 focus:ring-amber-500" rows="3" placeholder="請指出邏輯矛盾或不合理處..."></textarea>
+                        <div v-if="answers.page1_logic.consistency_score" class="mt-3 animate-fadeIn">
+                            <label class="block text-sm font-medium mb-1" :class="answers.page1_logic.consistency_score < 3 ? 'text-amber-800' : 'text-slate-600'">
+                                意見回饋
+                                <span v-if="answers.page1_logic.consistency_score < 3" class="text-red-500">*</span>
+                                <span v-else class="text-slate-400 font-normal">（選填）</span>
+                            </label>
+                            <textarea v-model="answers.page1_logic.consistency_reason" class="w-full border rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-amber-500" :class="answers.page1_logic.consistency_score < 3 ? 'border-amber-300 bg-amber-50/10' : 'border-slate-300 bg-white'" rows="3" :placeholder="answers.page1_logic.consistency_score < 3 ? '請指出邏輯矛盾或不合理處...' : '若有補充意見可在此填寫（選填）...'"></textarea>
                         </div>
                     </div>
 
@@ -536,7 +540,7 @@ createApp({
                 if (!p1.hallucination_score) return "請評估「幻覺與誇大風險檢測」";
                 if (p1.hallucination_score < 3 && !p1.hallucination_reason.trim()) return "請填寫「幻覺與誇大風險檢測」意見回饋";
                 if (!p1.consistency_score) return "請評估「敘述邏輯與內容一致性」";
-                if (p1.consistency_score < 3 && !p1.consistency_reason.trim()) return "請填寫「指出不合理之處」";
+                if (p1.consistency_score < 3 && !p1.consistency_reason.trim()) return "請填寫「敘述邏輯與內容一致性」意見回饋";
                 if (!p1.is_structural_complete) return "請評估「本文結構完整性」";
                 if (p1.is_structural_complete === '否' && p1.missing_structures.length === 0) return "請勾選缺少哪些結構";
                 if (!p1.has_privacy_issue) return "請填寫「隱私資訊審查」";
