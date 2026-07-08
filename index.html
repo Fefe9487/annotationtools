@@ -14,6 +14,35 @@
             to { opacity: 1; transform: translateY(0); }
         }
         .animate-fadeIn { animation: fadeIn 0.25s ease-out forwards; }
+
+        /* 手機版：把危害特徵標籤表格改為卡片式，避免欄位擠壓、文字直排難操作 */
+        @media (max-width: 640px) {
+            table.responsive-tags,
+            table.responsive-tags tbody,
+            table.responsive-tags tr,
+            table.responsive-tags td { display: block; width: 100%; }
+            table.responsive-tags thead { display: none; }
+            table.responsive-tags tr {
+                margin-bottom: 1rem;
+                border: 1px solid #e2e8f0;
+                border-radius: 0.75rem;
+                padding: 0.5rem 0.75rem;
+                background: #fff;
+            }
+            table.responsive-tags td {
+                border: none !important;
+                padding: 0.5rem 0;
+            }
+            table.responsive-tags td::before {
+                content: attr(data-label);
+                display: block;
+                font-weight: 700;
+                font-size: 0.7rem;
+                color: #64748b;
+                margin-bottom: 0.35rem;
+                text-transform: none;
+            }
+        }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-800 font-sans min-h-screen flex flex-col">
@@ -89,7 +118,7 @@
         </div>
     </header>
 
-    <main class="flex-grow max-w-7xl w-full mx-auto px-4 py-6 sm:px-6 lg:px-8">
+    <main class="flex-grow max-w-7xl w-full mx-auto px-4 py-6 pb-28 sm:px-6 lg:px-8">
         
         <div v-if="totalCases === 0" class="bg-white rounded-xl border border-dashed border-slate-300 p-12 text-center my-12">
             <span class="text-5xl block mb-4">📂</span>
@@ -287,7 +316,7 @@
             <div v-if="currentPage === 3" class="bg-white p-6 rounded-xl border border-slate-200 shadow-xs space-y-6 animate-fadeIn">
                 <h2 class="text-xl font-bold text-slate-900 border-b pb-3">面向三：危害特徵標籤的準確性</h2>
                 <div class="overflow-x-auto">
-                    <table class="min-w-full divide-y divide-slate-200 border border-slate-100 rounded-lg overflow-hidden">
+                    <table class="responsive-tags min-w-full divide-y divide-slate-200 border border-slate-100 rounded-lg overflow-hidden">
                         <thead class="bg-slate-50">
                             <tr>
                                 <th class="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase w-28">維度</th>
@@ -298,18 +327,18 @@
                         </thead>
                         <tbody class="bg-white divide-y divide-slate-200 text-sm">
                             <tr v-for="dim in tagDimensions" :key="dim.key" class="hover:bg-slate-50/50">
-                                <td class="px-4 py-4 font-medium text-slate-900 vertical-top">{{ dim.name }} <span class="text-red-500">*</span></td>
-                                <td class="px-4 py-4 text-slate-600 whitespace-normal">
+                                <td data-label="維度" class="px-4 py-4 font-medium text-slate-900 vertical-top">{{ dim.name }} <span class="text-red-500">*</span></td>
+                                <td data-label="模型生成標籤" class="px-4 py-4 text-slate-600 whitespace-normal">
                                     <div class="flex flex-wrap gap-1">
                                         <span v-for="tag in getModelTags(dim.key)" :key="tag" class="inline-block bg-blue-50 text-blue-700 text-xs px-2 py-1 rounded border border-blue-100">{{ tag }}</span>
                                     </div>
                                 </td>
-                                <td class="px-4 py-4 vertical-top space-y-1.5">
+                                <td data-label="評估選項" class="px-4 py-4 vertical-top space-y-1.5">
                                     <label class="flex items-center gap-2 cursor-pointer"><input type="radio" v-model="answers.page3_tags[dim.key].status" value="適當" class="text-blue-600"><span class="text-emerald-700 font-medium">⭕ 適當</span></label>
                                     <label v-if="dim.key !== '危害類型'" class="flex items-center gap-2 cursor-pointer"><input type="radio" v-model="answers.page3_tags[dim.key].status" value="部分適當" class="text-blue-600"><span class="text-amber-700 font-medium">🟡 部分適當</span></label>
                                     <label class="flex items-center gap-2 cursor-pointer"><input type="radio" v-model="answers.page3_tags[dim.key].status" value="不適當" class="text-blue-600"><span class="text-red-700 font-medium">❌ 不適當</span></label>
                                 </td>
-                                <td class="px-4 py-4 vertical-top">
+                                <td data-label="補充說明" class="px-4 py-4 vertical-top">
                                     <div v-if="answers.page3_tags[dim.key].status && answers.page3_tags[dim.key].status !== '適當'">
                                         <input type="text" v-model="answers.page3_tags[dim.key].correction" class="w-full border border-amber-300 rounded p-2 text-sm bg-amber-50/10 focus:ring-1 focus:ring-amber-500" :placeholder="dim.tip">
                                     </div>
@@ -698,7 +727,7 @@ createApp({
                     original_law: key, suggested_replacement: lawCorrectionMap.value[key] || ""
                 }));
             } else if (p2.evaluation_status === '所有法規均不適當') {
-                p2.inappropriate_laws = currentCase.value.processed_result.map(l => ({
+                p2.inappropriate_laws = (currentCase.value.processed_result || []).map(l => ({
                     original_law: l.法規名稱 + l.條號, suggested_replacement: allLawsInappropriateReason.value
                 }));
             } else {
@@ -790,7 +819,7 @@ createApp({
                         original_law: key, suggested_replacement: lawCorrectionMap.value[key] || ""
                     }));
                 } else if (oldP2.evaluation_status === '所有法規均不適當' && oldCase) {
-                    oldP2.inappropriate_laws = oldCase.processed_result.map(l => ({
+                    oldP2.inappropriate_laws = (oldCase.processed_result || []).map(l => ({
                         original_law: l.法規名稱 + l.條號, suggested_replacement: allLawsInappropriateReason.value
                     }));
                 }
@@ -873,6 +902,9 @@ createApp({
                 } catch (err) {
                     alert("解析 JSON 錯誤，請確認編碼與語法正確性。");
                     saveStatus.value = "解析失敗";
+                } finally {
+                    // 清空 input 值，讓使用者可重複選同一檔案再次觸發匯入
+                    event.target.value = '';
                 }
             };
             reader.readAsText(file);
@@ -954,7 +986,7 @@ createApp({
         const handleLawStatusChange = () => {
             if (!answers.value || !currentCase.value) return;
             if (answers.value.page2_laws.evaluation_status === '所有法規均不適當') {
-                tempSelectedLaws.value = currentCase.value.processed_result.map(l => l.法規名稱 + l.條號);
+                tempSelectedLaws.value = (currentCase.value.processed_result || []).map(l => l.法規名稱 + l.條號);
             } else {
                 tempSelectedLaws.value = [];
                 lawCorrectionMap.value = {};
