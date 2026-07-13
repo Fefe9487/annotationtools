@@ -289,9 +289,11 @@
                                 <span class="font-medium text-red-800">所有法規均不適當</span>
                             </div>
                         </label>
-                        <label class="flex items-center gap-3 p-3 rounded-lg border border-slate-100 hover:bg-slate-50 cursor-pointer text-sm">
-                            <input type="radio" v-model="answers.page2_laws.evaluation_status" value="未選擇任何法規" class="text-blue-600" @change="handleLawStatusChange">
-                            <span>未選擇任何法規 (直接跳過)</span>
+                        <label class="flex flex-col p-3 rounded-lg border border-slate-100 hover:bg-slate-50 cursor-pointer text-sm">
+                            <div class="flex items-center gap-3">
+                                <input type="radio" v-model="answers.page2_laws.evaluation_status" value="未選擇任何法規" class="text-blue-600" @change="handleLawStatusChange">
+                                <span class="font-medium text-emerald-800">使用者自行推薦法規</span>
+                            </div>
                         </label>
                     </div>
 
@@ -309,6 +311,11 @@
                     <div v-if="answers.page2_laws.evaluation_status === '所有法規均不適當'" class="mt-4 p-4 bg-red-50/30 border border-red-200 rounded-xl space-y-2 animate-fadeIn">
                         <label class="block text-sm font-bold text-red-900">請填寫建議法規 <span class="text-red-500">*</span></label>
                         <textarea v-model="allLawsInappropriateReason" class="w-full border border-slate-300 rounded-lg p-2.5 text-sm bg-white focus:ring-2 focus:ring-red-500" rows="4" placeholder="請列出建議採用的正確法規與條文..."></textarea>
+                    </div>
+
+                    <div v-if="answers.page2_laws.evaluation_status === '未選擇任何法規'" class="mt-4 p-4 bg-emerald-50/40 border border-emerald-200 rounded-xl space-y-2 animate-fadeIn">
+                        <label class="block text-sm font-bold text-emerald-900">請自行推薦適用之法規（選填）</label>
+                        <textarea v-model="answers.page2_laws.recommended_laws" class="w-full border border-slate-300 rounded-lg p-2.5 text-sm bg-white focus:ring-2 focus:ring-emerald-500" rows="4" placeholder="若您有想推薦的法規，請列出法規名稱與條號（可留空）..."></textarea>
                     </div>
                 </div>
             </div>
@@ -592,7 +599,7 @@ createApp({
                     is_structural_complete: null, missing_structures: [],
                     has_privacy_issue: null, privacy_issue_details: ""
                 },
-                page2_laws: { evaluation_status: "", inappropriate_laws: [] },
+                page2_laws: { evaluation_status: "", inappropriate_laws: [], recommended_laws: "" },
                 page3_tags: page3Init,
                 page4_improvements: {
                     action_score: null, action_reason: "",
@@ -985,12 +992,16 @@ createApp({
         // 表單內層控制方法
         const handleLawStatusChange = () => {
             if (!answers.value || !currentCase.value) return;
-            if (answers.value.page2_laws.evaluation_status === '所有法規均不適當') {
+            const status = answers.value.page2_laws.evaluation_status;
+            if (status === '所有法規均不適當') {
                 tempSelectedLaws.value = (currentCase.value.processed_result || []).map(l => l.法規名稱 + l.條號);
             } else {
                 tempSelectedLaws.value = [];
                 lawCorrectionMap.value = {};
                 allLawsInappropriateReason.value = '';
+            }
+            if (status !== '未選擇任何法規') {
+                answers.value.page2_laws.recommended_laws = '';
             }
         };
 
