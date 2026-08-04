@@ -298,6 +298,16 @@
                             <div>
                                 <label class="block text-xs font-medium text-slate-600 mb-1">建議替換之法規名稱及條號 <span class="text-red-500">*</span></label>
                                 <input type="text" v-model="lawCorrectionMap[lawKey]" class="w-full border border-slate-300 rounded p-2 text-sm focus:ring-1 focus:ring-amber-500">
+                                <div class="flex flex-wrap gap-2 mt-2">
+                                    <button type="button" @click="lawCorrectionMap[lawKey] = '移到管理建議'"
+                                            class="px-2.5 py-1 text-xs rounded border border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100 transition-colors">
+                                        移到管理建議
+                                    </button>
+                                    <button type="button" @click="lawCorrectionMap[lawKey] = '完全不相關'"
+                                            class="px-2.5 py-1 text-xs rounded border border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100 transition-colors">
+                                        完全不相關
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
