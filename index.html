@@ -522,6 +522,7 @@ const formatCaseField = (caseObj, key) => {
 const DB_NAME = "ZhianAnnotationLargeDB";
 const DB_VERSION = 2;
 const ANNOTATOR_STORAGE_KEY = "zhian_annotator_id";
+const UI_CURSOR_KEY = "ui_cursor";
 let dbInstance = null;
 
 const initIndexedDB = () => {
@@ -564,6 +565,7 @@ createApp({
         const showAnnotatorModal = ref(false);
         const annotatorIdInputRef = ref(null);
         let pendingImportMessage = "";
+        let isRestoringUi = false;
 
         const totalCases = computed(() => cases.value.length);
         const currentCase = computed(() => cases.value[currentCaseIndex.value] || null);
@@ -633,6 +635,95 @@ createApp({
             if (cached?.trim()) {
                 annotatorId.value = cached.trim();
             }
+        };
+
+        const saveUiCursor = () => {
+            if (!dbInstance || totalCases.value === 0) return;
+            if (!dbInstance.objectStoreNames.contains("meta_store")) return;
+            try {
+                const tx = dbInstance.transaction("meta_store", "readwrite");
+                tx.objectStore("meta_store").put({
+                    key: UI_CURSOR_KEY,
+                    value: {
+                        caseIndex: currentCaseIndex.value,
+                        page: currentPage.value
+                    }
+                });
+            } catch (err) {
+                console.warn("標註進度游標寫入 meta_store 失敗:", err);
+            }
+        };
+
+        const loadUiCursor = () => new Promise((resolve) => {
+            if (!dbInstance?.objectStoreNames.contains("meta_store")) {
+                resolve(null);
+                return;
+            }
+            try {
+                const tx = dbInstance.transaction("meta_store", "readonly");
+                const req = tx.objectStore("meta_store").get(UI_CURSOR_KEY);
+                req.onsuccess = (e) => resolve(e.target.result?.value || null);
+                req.onerror = () => resolve(null);
+            } catch (err) {
+                console.warn("標註進度游標讀取失敗:", err);
+                resolve(null);
+            }
+        });
+
+        const hydratePage2Temps = (idx) => {
+            const p2 = allCaseAnswers.value[idx]?.page2_laws;
+            if (!p2) {
+                tempSelectedLaws.value = [];
+                lawCorrectionMap.value = {};
+                allLawsInappropriateReason.value = '';
+                return;
+            }
+            if (p2.evaluation_status === '部分法規不適當') {
+                tempSelectedLaws.value = (p2.inappropriate_laws || []).map(l => l.original_law);
+                lawCorrectionMap.value = {};
+                (p2.inappropriate_laws || []).forEach(l => {
+                    lawCorrectionMap.value[l.original_law] = l.suggested_replacement;
+                });
+                allLawsInappropriateReason.value = '';
+            } else if (p2.evaluation_status === '所有法規均不適當') {
+                tempSelectedLaws.value = [];
+                lawCorrectionMap.value = {};
+                allLawsInappropriateReason.value = p2.inappropriate_laws?.[0]?.suggested_replacement || '';
+            } else {
+                tempSelectedLaws.value = [];
+                lawCorrectionMap.value = {};
+                allLawsInappropriateReason.value = '';
+            }
+        };
+
+        const resolveResumeTarget = (savedCursor) => {
+            const maxIdx = cases.value.length - 1;
+            if (maxIdx < 0) return { caseIndex: 0, page: 1 };
+
+            if (savedCursor && Number.isInteger(savedCursor.caseIndex)
+                && savedCursor.caseIndex >= 0 && savedCursor.caseIndex <= maxIdx) {
+                const page = Number.isInteger(savedCursor.page)
+                    ? Math.min(4, Math.max(1, savedCursor.page))
+                    : 1;
+                return { caseIndex: savedCursor.caseIndex, page };
+            }
+
+            const firstIncomplete = cases.value.findIndex((_, idx) => !!validateCaseCompleteness(idx));
+            return {
+                caseIndex: firstIncomplete >= 0 ? firstIncomplete : maxIdx,
+                page: 1
+            };
+        };
+
+        const applyResumePosition = async (savedCursor) => {
+            const { caseIndex, page } = resolveResumeTarget(savedCursor);
+            isRestoringUi = true;
+            currentCaseIndex.value = caseIndex;
+            hydratePage2Temps(caseIndex);
+            await nextTick();
+            currentPage.value = page;
+            isRestoringUi = false;
+            saveUiCursor();
         };
 
         const openAnnotatorModal = async (draft = "") => {
@@ -774,7 +865,7 @@ createApp({
 
                     // 讀取對應批註
                     const txAns = dbInstance.transaction("answers_store", "readonly");
-                    txAns.objectStore("answers_store").getAll().onsuccess = (ev) => {
+                    txAns.objectStore("answers_store").getAll().onsuccess = async (ev) => {
                         const ansRes = ev.target.result;
                         cases.value.forEach((c, idx) => {
                             initAnswersStructure(idx, c);
@@ -784,7 +875,10 @@ createApp({
                                 allCaseAnswers.value[idx] = savedAns;
                             }
                         });
-                        saveStatus.value = "歷史資料恢復成功，歡迎回來";
+                        const savedCursor = await loadUiCursor();
+                        await applyResumePosition(savedCursor);
+                        const resumeNo = currentCaseIndex.value + 1;
+                        saveStatus.value = `歷史資料恢復成功，已回到第 ${resumeNo} 筆`;
                         if (!annotatorId.value) {
                             openAnnotatorModal();
                         }
@@ -822,6 +916,7 @@ createApp({
                 tx.oncomplete = () => {
                     const now = new Date();
                     saveStatus.value = `自動存檔成功 (${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')})`;
+                    saveUiCursor();
                 };
             } catch (err) {
                 console.error("存檔失敗: ", err);
@@ -833,7 +928,7 @@ createApp({
         watch(currentCaseIndex, (newIdx, oldIdx) => {
             if (totalCases.value === 0) return;
 
-            if (oldIdx !== undefined && allCaseAnswers.value[oldIdx]?.page2_laws) {
+            if (!isRestoringUi && oldIdx !== undefined && allCaseAnswers.value[oldIdx]?.page2_laws) {
                 const oldP2 = allCaseAnswers.value[oldIdx].page2_laws;
                 const oldCase = cases.value[oldIdx];
                 if (oldP2.evaluation_status === '部分法規不適當') {
@@ -847,26 +942,15 @@ createApp({
                 }
             }
 
-            currentPage.value = 1;
-            
-            // 還原 Page 2 中介值
-            const p2 = allCaseAnswers.value[newIdx]?.page2_laws;
-            if (p2) {
-                if (p2.evaluation_status === '部分法規不適當') {
-                    tempSelectedLaws.value = p2.inappropriate_laws.map(l => l.original_law);
-                    lawCorrectionMap.value = {};
-                    p2.inappropriate_laws.forEach(l => { lawCorrectionMap.value[l.original_law] = l.suggested_replacement; });
-                    allLawsInappropriateReason.value = '';
-                } else if (p2.evaluation_status === '所有法規均不適當') {
-                    tempSelectedLaws.value = [];
-                    lawCorrectionMap.value = {};
-                    allLawsInappropriateReason.value = p2.inappropriate_laws[0]?.suggested_replacement || '';
-                } else {
-                    tempSelectedLaws.value = [];
-                    lawCorrectionMap.value = {};
-                    allLawsInappropriateReason.value = '';
-                }
+            if (!isRestoringUi) {
+                currentPage.value = 1;
+                hydratePage2Temps(newIdx);
+                saveUiCursor();
             }
+        });
+
+        watch(currentPage, () => {
+            if (!isRestoringUi) saveUiCursor();
         });
 
         // 深度聆聽所有答案對象，只要任何文字、單選更改即觸發自動存檔
@@ -999,6 +1083,7 @@ createApp({
                 if (dbInstance?.objectStoreNames.contains("meta_store")) {
                     const txMeta = dbInstance.transaction("meta_store", "readwrite");
                     txMeta.objectStore("meta_store").delete("annotator_id");
+                    txMeta.objectStore("meta_store").delete(UI_CURSOR_KEY);
                 }
                 saveStatus.value = "本地資料庫已清空";
             }
