@@ -55,11 +55,11 @@
             <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200 text-sm">
                 <div class="flex flex-wrap items-center gap-2">
                     <label class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg cursor-pointer transition flex items-center gap-1 shadow-xs">
-                        📥 匯入案件 JSON
+                        📥 匯入案件／備份 JSON
                         <input type="file" accept=".json" @change="handleJsonImport" class="hidden">
                     </label>
                     <button type="button" @click="exportAllData" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white font-medium rounded-lg transition flex items-center gap-1 shadow-xs">
-                        📤 匯出批註結果
+                        📤 匯出全部資料
                     </button>
                     <button type="button" @click="clearDatabase" class="px-2 py-1.5 text-red-600 hover:bg-red-50 font-medium rounded-lg transition">
                         🗑️ 清空本地快取
@@ -112,7 +112,7 @@
         <div v-if="isQualificationMode" class="max-w-7xl mx-auto px-4 pb-2 sm:px-6 lg:px-8">
             <div class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 text-sm text-blue-900 flex flex-wrap items-center gap-x-4 gap-y-1">
                 <span class="font-bold">📋 演示批注（{{ qualificationTotal }} 題）</span>
-                <span>請逐頁填寫完整；全部完成後可匯出 JSON</span>
+                <span>請逐頁填寫完整；隨時可按「匯出全部資料」備份，之後用同一檔匯入即可還原</span>
                 <span class="font-semibold text-emerald-700">已完成 {{ completedCasesCount }} / {{ qualificationTotal }}</span>
             </div>
         </div>
@@ -123,7 +123,7 @@
         <div v-if="totalCases === 0" class="bg-white rounded-xl border border-dashed border-slate-300 p-12 text-center my-12">
             <span class="text-5xl block mb-4">📂</span>
             <h3 class="text-lg font-bold text-slate-700">尚未載入職安事故資料</h3>
-            <p class="text-slate-400 text-sm mt-1 mb-4">請點擊上方「匯入案件 JSON」，選取本機的災害案例陣列檔案後開始批注。</p>
+            <p class="text-slate-400 text-sm mt-1 mb-4">請匯入案件 JSON 開始批注；若曾匯出備份，也可直接匯入該檔還原進度。</p>
         </div>
 
         <div v-else>
@@ -523,6 +523,7 @@ const DB_NAME = "ZhianAnnotationLargeDB";
 const DB_VERSION = 2;
 const ANNOTATOR_STORAGE_KEY = "zhian_annotator_id";
 const UI_CURSOR_KEY = "ui_cursor";
+const BACKUP_TYPE = "zhian_annotation_backup";
 let dbInstance = null;
 
 const initIndexedDB = () => {
@@ -901,6 +902,26 @@ createApp({
             }, 30000); // 停止輸入後 30秒進行背景存檔
         };
 
+        const persistAllAnswersToDB = () => {
+            if (!dbInstance || totalCases.value === 0) return;
+            syncCurrentPage2Answers();
+            const tx = dbInstance.transaction("answers_store", "readwrite");
+            const store = tx.objectStore("answers_store");
+            Object.values(allCaseAnswers.value).forEach((ans) => {
+                if (ans?.case_title) store.put(JSON.parse(JSON.stringify(ans)));
+            });
+        };
+
+        const downloadJsonFile = (payload, filename) => {
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(payload, null, 2));
+            const dlAnchor = document.createElement('a');
+            dlAnchor.setAttribute("href", dataStr);
+            dlAnchor.setAttribute("download", filename);
+            document.body.appendChild(dlAnchor);
+            dlAnchor.click();
+            dlAnchor.remove();
+        };
+
         const saveCurrentProgressToDB = () => {
             if (!dbInstance || totalCases.value === 0 || !answers.value) return;
             syncCurrentPage2Answers();
@@ -958,40 +979,125 @@ createApp({
             triggerAutoSave();
         }, { deep: true });
 
+        const writeSnapshotToDB = (caseList, answerMap) => new Promise((resolve, reject) => {
+            const stores = ["cases_store", "answers_store"];
+            if (dbInstance.objectStoreNames.contains("meta_store")) stores.push("meta_store");
+            const tx = dbInstance.transaction(stores, "readwrite");
+            const storeCases = tx.objectStore("cases_store");
+            storeCases.clear();
+            caseList.forEach((c, idx) => {
+                storeCases.put({ id: idx, data: JSON.parse(JSON.stringify(c)) });
+            });
+            const storeAns = tx.objectStore("answers_store");
+            storeAns.clear();
+            Object.values(answerMap).forEach((ans) => {
+                if (ans?.case_title) storeAns.put(JSON.parse(JSON.stringify(ans)));
+            });
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => reject(tx.error);
+        });
+
         // 處理外部 JSON 檔案讀入
         const ingestCases = async (inputArray, sourceLabel = 'JSON') => {
             if (inputArray.length === 0 || !inputArray[0].標題敘述) {
-                alert("匯入失敗：JSON 結構似乎不合規，需包含「標題敘述」等欄位！");
+                alert("匯入失敗：JSON 結構似乎不合規，需包含「標題敘述」等欄位！\n若這是舊版「批註結果」檔，無法還原進度；請改用新版「匯出全部資料」的備份檔。");
+                saveStatus.value = "匯入失敗（格式不符）";
                 return false;
             }
             if (!dbInstance) {
                 alert("本地資料庫尚未就緒，請稍候 1～2 秒後再匯入。");
                 return false;
             }
+            if (totalCases.value > 0) {
+                const ok = confirm("再次匯入案件會從第一案重新開始畫面進度。\n若要還原標註，請改選「匯出全部資料」下載的備份檔。\n\n確定繼續？");
+                if (!ok) {
+                    saveStatus.value = "已取消匯入";
+                    return false;
+                }
+            }
+
+            const existingAns = await new Promise((resolve) => {
+                try {
+                    const txAns = dbInstance.transaction("answers_store", "readonly");
+                    const req = txAns.objectStore("answers_store").getAll();
+                    req.onsuccess = () => resolve(req.result || []);
+                    req.onerror = () => resolve([]);
+                } catch (err) {
+                    resolve([]);
+                }
+            });
 
             cases.value = inputArray;
             currentCaseIndex.value = 0;
             currentPage.value = 1;
             allCaseAnswers.value = {};
-
-            const tx = dbInstance.transaction(["cases_store", "answers_store"], "readwrite");
-            const storeCases = tx.objectStore("cases_store");
-            storeCases.clear();
-
             inputArray.forEach((c, idx) => {
-                storeCases.put({ id: idx, data: JSON.parse(JSON.stringify(c)) });
                 initAnswersStructure(idx, c);
+                const saved = existingAns.find(a => a.case_title === c.標題敘述);
+                if (saved) {
+                    normalizePage2Laws(saved.page2_laws);
+                    allCaseAnswers.value[idx] = JSON.parse(JSON.stringify(saved));
+                }
             });
 
-            return new Promise((resolve) => {
-                tx.oncomplete = () => {
-                    saveStatus.value = `成功載入 ${inputArray.length} 筆災害資料（${sourceLabel}）`;
-                    pendingImportMessage = `成功載入 ${inputArray.length} 筆災害資料！\n請逐頁填寫完整，全部完成後可匯出 JSON。`;
-                    openAnnotatorModal();
-                    resolve(true);
-                };
-                tx.onerror = () => resolve(false);
+            try {
+                await writeSnapshotToDB(inputArray, allCaseAnswers.value);
+            } catch (err) {
+                console.error(err);
+                return false;
+            }
+            saveUiCursor();
+            saveStatus.value = `成功載入 ${inputArray.length} 筆災害資料（${sourceLabel}）`;
+            pendingImportMessage = `成功載入 ${inputArray.length} 筆災害資料！\n請隨時按「匯出全部資料」備份，以免本機進度遺失。`;
+            openAnnotatorModal();
+            return true;
+        };
+
+        const restoreBackup = async (backup, sourceLabel = '備份') => {
+            if (!dbInstance) {
+                alert("本地資料庫尚未就緒，請稍候 1～2 秒後再匯入。");
+                return false;
+            }
+            const caseList = backup.cases || [];
+            if (!caseList.length || !caseList[0].標題敘述) {
+                alert("備份檔缺少案件資料，無法還原。");
+                return false;
+            }
+            if (totalCases.value > 0) {
+                const ok = confirm("匯入備份會覆蓋目前本機進度。確定還原？");
+                if (!ok) {
+                    saveStatus.value = "已取消還原";
+                    return false;
+                }
+            }
+
+            const savedAnswers = backup.answers || [];
+            cases.value = caseList;
+            allCaseAnswers.value = {};
+            caseList.forEach((c, idx) => {
+                initAnswersStructure(idx, c);
+                const saved = savedAnswers.find(a => a.case_title === c.標題敘述) || savedAnswers[idx];
+                if (saved) {
+                    normalizePage2Laws(saved.page2_laws);
+                    allCaseAnswers.value[idx] = JSON.parse(JSON.stringify(saved));
+                }
             });
+
+            if (backup._annotator_id) saveAnnotatorId(backup._annotator_id);
+
+            try {
+                await writeSnapshotToDB(caseList, allCaseAnswers.value);
+            } catch (err) {
+                console.error(err);
+                alert("備份寫入本機資料庫失敗。");
+                return false;
+            }
+
+            await applyResumePosition(backup.ui_cursor || { caseIndex: 0, page: 1 });
+            const done = completedCasesCount.value;
+            saveStatus.value = `已還原備份（${caseList.length} 筆，已完成 ${done} 筆，${sourceLabel}）`;
+            if (!annotatorId.value) openAnnotatorModal();
+            return true;
         };
 
         const handleJsonImport = (event) => {
@@ -1003,20 +1109,23 @@ createApp({
             reader.onload = async (e) => {
                 try {
                     const parsed = JSON.parse(e.target.result);
-                    const inputArray = Array.isArray(parsed) ? parsed : [parsed];
-                    await ingestCases(inputArray, file.name);
+                    if (parsed && parsed._type === BACKUP_TYPE) {
+                        await restoreBackup(parsed, file.name);
+                    } else {
+                        const inputArray = Array.isArray(parsed) ? parsed : [parsed];
+                        await ingestCases(inputArray, file.name);
+                    }
                 } catch (err) {
                     alert("解析 JSON 錯誤，請確認編碼與語法正確性。");
                     saveStatus.value = "解析失敗";
                 } finally {
-                    // 清空 input 值，讓使用者可重複選同一檔案再次觸發匯入
                     event.target.value = '';
                 }
             };
             reader.readAsText(file);
         };
 
-        // 匯出全部專家批註 JSON 檔案
+        // 匯出完整備份（案件 + 答案 + 目前進度，未完成也可下載）
         const exportAllData = () => {
             if (totalCases.value === 0) {
                 alert("目前沒有任何案件資料可供匯出。");
@@ -1025,42 +1134,27 @@ createApp({
             if (!requireAnnotatorId()) {
                 return false;
             }
-            syncCurrentPage2Answers();
-            saveCurrentProgressToDB();
+            persistAllAnswersToDB();
+            saveUiCursor();
 
-            const pending = [];
-            cases.value.forEach((c, idx) => {
-                const err = validateCaseCompleteness(idx);
-                if (err) {
-                    const label = c._test_meta?.id || c.標題敘述 || `第 ${idx + 1} 案`;
-                    pending.push(`${label}：${err}`);
-                }
-            });
-            if (pending.length > 0) {
-                alert(`⚠️ 尚有批注未完成，無法匯出。\n\n${pending.slice(0, 8).join("\n")}${pending.length > 8 ? `\n…等共 ${pending.length} 案` : ""}`);
-                return false;
-            }
-
-            const outputData = Object.keys(allCaseAnswers.value).map(key => {
-                const item = allCaseAnswers.value[key];
-                const sourceCase = cases.value[Number(key)];
-                const caseMeta = sourceCase?._test_meta;
-                return {
-                    ...item,
-                    ...(caseMeta ? { _qualification_id: caseMeta.id } : {}),
-                    ...(sourceCase?._case_index != null ? { _case_index: sourceCase._case_index } : {}),
-                    _annotator_id: annotatorId.value,
-                    _export_complete: true,
-                    _exported_at: new Date().toISOString()
-                };
-            });
-            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(outputData, null, 2));
-            const dlAnchor = document.createElement('a');
-            dlAnchor.setAttribute("href", dataStr);
-            dlAnchor.setAttribute("download", `職安系統批註結果_${annotatorId.value}_${isQualificationMode.value ? '演示_' : ''}${new Date().toISOString().slice(0,10)}.json`);
-            document.body.appendChild(dlAnchor);
-            dlAnchor.click();
-            dlAnchor.remove();
+            const done = completedCasesCount.value;
+            const payload = {
+                _type: BACKUP_TYPE,
+                _version: 1,
+                _annotator_id: annotatorId.value,
+                _exported_at: new Date().toISOString(),
+                _completed_count: done,
+                _total_count: totalCases.value,
+                ui_cursor: {
+                    caseIndex: currentCaseIndex.value,
+                    page: currentPage.value
+                },
+                cases: JSON.parse(JSON.stringify(cases.value)),
+                answers: cases.value.map((_, idx) => JSON.parse(JSON.stringify(allCaseAnswers.value[idx] || { case_title: cases.value[idx]?.標題敘述 })))
+            };
+            const date = new Date().toISOString().slice(0, 10);
+            downloadJsonFile(payload, `職安系統標註備份_${annotatorId.value}_${date}.json`);
+            saveStatus.value = `已下載完整備份（${totalCases.value} 筆案件，已完成 ${done} 筆）`;
             return true;
         };
 
@@ -1149,7 +1243,7 @@ createApp({
                     currentPage.value = 1;
                 } else {
                     if (exportAllData()) {
-                        alert("🎉 全部案件批註已完成，結果已匯出 JSON。");
+                        alert("🎉 全部案件批註已完成，完整備份已下載。");
                     }
                 }
             }
