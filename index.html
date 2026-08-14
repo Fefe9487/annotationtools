@@ -524,6 +524,8 @@ const DB_VERSION = 2;
 const ANNOTATOR_STORAGE_KEY = "zhian_annotator_id";
 const UI_CURSOR_KEY = "ui_cursor";
 const BACKUP_TYPE = "zhian_annotation_backup";
+const BACKUP_EVERY = 25;
+const BACKUP_PROMPT_KEY = "backup_prompt_completed";
 let dbInstance = null;
 
 const initIndexedDB = () => {
@@ -567,6 +569,7 @@ createApp({
         const annotatorIdInputRef = ref(null);
         let pendingImportMessage = "";
         let isRestoringUi = false;
+        const lastBackupPromptCount = ref(0);
 
         const totalCases = computed(() => cases.value.length);
         const currentCase = computed(() => cases.value[currentCaseIndex.value] || null);
@@ -636,6 +639,51 @@ createApp({
             if (cached?.trim()) {
                 annotatorId.value = cached.trim();
             }
+        };
+
+        const saveBackupPromptCount = (n) => {
+            lastBackupPromptCount.value = n;
+            if (!dbInstance?.objectStoreNames.contains("meta_store")) return;
+            try {
+                const tx = dbInstance.transaction("meta_store", "readwrite");
+                tx.objectStore("meta_store").put({ key: BACKUP_PROMPT_KEY, value: n });
+            } catch (err) {
+                console.warn("備份里程碑寫入失敗:", err);
+            }
+        };
+
+        const loadBackupPromptCount = () => new Promise((resolve) => {
+            if (!dbInstance?.objectStoreNames.contains("meta_store")) {
+                resolve(0);
+                return;
+            }
+            try {
+                const tx = dbInstance.transaction("meta_store", "readonly");
+                const req = tx.objectStore("meta_store").get(BACKUP_PROMPT_KEY);
+                req.onsuccess = (e) => {
+                    const n = Number(e.target.result?.value);
+                    resolve(Number.isFinite(n) && n >= 0 ? n : 0);
+                };
+                req.onerror = () => resolve(0);
+            } catch (err) {
+                resolve(0);
+            }
+        });
+
+        const crossedBackupMilestone = (done, lastPrompt) =>
+            done >= BACKUP_EVERY && Math.floor(done / BACKUP_EVERY) > Math.floor(lastPrompt / BACKUP_EVERY);
+
+        const maybeOfferMilestoneBackup = () => {
+            const done = completedCasesCount.value;
+            if (!crossedBackupMilestone(done, lastBackupPromptCount.value)) return false;
+            const ok = confirm(`已完成 ${done} 筆，建議下載完整備份以免進度遺失。現在下載？`);
+            if (ok) {
+                if (!exportAllData()) saveBackupPromptCount(done);
+            } else {
+                saveBackupPromptCount(done);
+                saveStatus.value = `已完成 ${done} 筆，請盡快按「匯出全部資料」備份`;
+            }
+            return true;
         };
 
         const saveUiCursor = () => {
@@ -877,6 +925,7 @@ createApp({
                             }
                         });
                         const savedCursor = await loadUiCursor();
+                        lastBackupPromptCount.value = await loadBackupPromptCount();
                         await applyResumePosition(savedCursor);
                         const resumeNo = currentCaseIndex.value + 1;
                         saveStatus.value = `歷史資料恢復成功，已回到第 ${resumeNo} 筆`;
@@ -1047,6 +1096,7 @@ createApp({
                 return false;
             }
             saveUiCursor();
+            saveBackupPromptCount(0);
             saveStatus.value = `成功載入 ${inputArray.length} 筆災害資料（${sourceLabel}）`;
             pendingImportMessage = `成功載入 ${inputArray.length} 筆災害資料！\n請隨時按「匯出全部資料」備份，以免本機進度遺失。`;
             openAnnotatorModal();
@@ -1095,6 +1145,8 @@ createApp({
 
             await applyResumePosition(backup.ui_cursor || { caseIndex: 0, page: 1 });
             const done = completedCasesCount.value;
+            const promptN = Number(backup._backup_prompt_completed);
+            saveBackupPromptCount(Number.isFinite(promptN) && promptN >= 0 ? promptN : done);
             saveStatus.value = `已還原備份（${caseList.length} 筆，已完成 ${done} 筆，${sourceLabel}）`;
             if (!annotatorId.value) openAnnotatorModal();
             return true;
@@ -1145,6 +1197,7 @@ createApp({
                 _exported_at: new Date().toISOString(),
                 _completed_count: done,
                 _total_count: totalCases.value,
+                _backup_prompt_completed: done,
                 ui_cursor: {
                     caseIndex: currentCaseIndex.value,
                     page: currentPage.value
@@ -1154,6 +1207,7 @@ createApp({
             };
             const date = new Date().toISOString().slice(0, 10);
             downloadJsonFile(payload, `職安系統標註備份_${annotatorId.value}_${date}.json`);
+            saveBackupPromptCount(done);
             saveStatus.value = `已下載完整備份（${totalCases.value} 筆案件，已完成 ${done} 筆）`;
             return true;
         };
@@ -1178,6 +1232,7 @@ createApp({
                     const txMeta = dbInstance.transaction("meta_store", "readwrite");
                     txMeta.objectStore("meta_store").delete("annotator_id");
                     txMeta.objectStore("meta_store").delete(UI_CURSOR_KEY);
+                    txMeta.objectStore("meta_store").delete(BACKUP_PROMPT_KEY);
                 }
                 saveStatus.value = "本地資料庫已清空";
             }
@@ -1238,9 +1293,11 @@ createApp({
             } else {
                 saveCurrentProgressToDB();
                 if (currentCaseIndex.value < totalCases.value - 1) {
-                    alert("✅ 本案批註已存檔，準備進入下一案。");
                     currentCaseIndex.value++;
                     currentPage.value = 1;
+                    if (!maybeOfferMilestoneBackup()) {
+                        alert("✅ 本案批註已存檔，準備進入下一案。");
+                    }
                 } else {
                     if (exportAllData()) {
                         alert("🎉 全部案件批註已完成，完整備份已下載。");
@@ -1277,7 +1334,8 @@ createApp({
             annotatorId, annotatorIdDraft, annotatorIdError, showAnnotatorModal, annotatorIdInputRef,
             isQualificationMode, qualificationTotal, completedCasesCount, getCaseField,
             handleJsonImport, exportAllData, clearDatabase, confirmAnnotatorId, handleLawStatusChange, isLawChecked, getModelTags,
-            addNewPpe, removeAddedPpe, prevPage, nextPage, getHallucinationText, getConsistencyText, getImprovementScoreText
+            addNewPpe, removeAddedPpe, prevPage, nextPage, getHallucinationText, getConsistencyText, getImprovementScoreText,
+            lastBackupPromptCount, maybeOfferMilestoneBackup
         };
     }
 }).mount('#app');
